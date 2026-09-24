@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -57,17 +56,11 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.foundation.Image
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.SvgDecoder
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -83,6 +76,26 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.text.style.TextAlign
+import java.time.YearMonth
+import java.time.LocalDate
+import java.time.format.TextStyle
+import java.util.Locale
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.geometry.Offset
+import android.app.DatePickerDialog
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,14 +115,26 @@ class MainActivity : ComponentActivity() {
                             tonalElevation = 0.dp
                         ) {
                             listOf(
-                                Triple("stats", Icons.Default.Star, "STATS"),
+                                Triple("dashboard", Icons.Default.Star, "DASHBOARD"),
                                 Triple("sessions_home", Icons.Default.Home, "SESSIONS"),
-                                Triple("data", Icons.Default.List, "DATA"),
-                                Triple("calendar", Icons.Default.DateRange, "CALENDAR")
+                                Triple("tools", Icons.Default.List, "TOOLS"),
+                                Triple("profile", Icons.Default.DateRange, "PROFILE")
                             ).forEach { (route, icon, label) ->
                                 NavigationBarItem(
                                     selected = currentRoute.value == route,
-                                    onClick = { /* unchanged */ },
+                                    onClick = {
+                                        if (route == "sessions_home" && currentRoute.value == "sessions_home") {
+                                            rootNavController.popBackStack("sessions", inclusive = false)
+                                        }
+                                        currentRoute.value = route
+                                        bottomNavController.navigate(route) {
+                                            popUpTo(bottomNavController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
                                     icon = { Icon(icon, contentDescription = label) },
                                     label = { Text(label) },
                                     colors = NavigationBarItemDefaults.colors(
@@ -139,6 +164,9 @@ class MainActivity : ComponentActivity() {
                                         vm = vm,
                                         onSessionClick = { sessionId ->
                                             rootNavController.navigate("workouts/$sessionId")
+                                        },
+                                        onBodyWeightClick = {
+                                            rootNavController.navigate("bodyweight_detail")
                                         }
                                     )
                                 }
@@ -163,11 +191,17 @@ class MainActivity : ComponentActivity() {
                                         onBack = { rootNavController.popBackStack() }
                                     )
                                 }
+                                composable("bodyweight_detail") {
+                                    BodyWeightDetailScreen(
+                                        vm = vm,
+                                        onBack = { rootNavController.popBackStack() }
+                                    )
+                                }
                             }
                         }
-                        composable("stats") { StatsScreen(vm = vm) }
-                        composable("data") { PlaceholderScreen("DATA") }
-                        composable("calendar") { PlaceholderScreen("CALENDAR") }
+                        composable("dashboard") { DashboardScreen(vm = vm) }
+                        composable("tools") { PlaceholderScreen("TOOLS") }
+                        composable("profile") { ProfileScreen(vm = vm) }
                     }
                 }
             }
@@ -182,6 +216,224 @@ fun PlaceholderScreen(title: String) {
         contentAlignment = Alignment.Center
     ) {
         Text(title, fontSize = 40.sp)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DashboardScreen(vm: WorkoutViewModel) {
+    val cards by vm.dashboardCards.collectAsState()
+    var showTypeChooser by remember { mutableStateOf(false) }
+    var showScopeChooser by remember { mutableStateOf(false) }
+    var pendingCardType by remember { mutableStateOf<String?>(null) }
+    var sessionNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    var exerciseNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    var noteTypes by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        vm.ensureDefaultDashboardCard()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(title = {
+                Text("DASHBOARD", style = MaterialTheme.typography.titleLarge, fontSize = 80.sp)
+            })
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = padding.calculateTopPadding()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(cards, key = { it.id }) { card ->
+                DashboardCardView(card = card, vm = vm)
+            }
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clickable {
+                            sessionNames = null.let { emptyList() } // reset, refetch below
+                            showTypeChooser = true
+                        },
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("ADD CARD", color = Color.Black, fontSize = 16.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showTypeChooser) {
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = { showTypeChooser = false },
+            title = { Text("Add Card") },
+            text = {
+                Column {
+                    listOf("CALENDAR", "GRAPH").forEach { type ->
+                        TextButton(
+                            onClick = {
+                                pendingCardType = type
+                                showTypeChooser = false
+                                showScopeChooser = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(type, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTypeChooser = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showScopeChooser && pendingCardType != null) {
+        LaunchedEffect(showScopeChooser) {
+            sessionNames = vm.getSessionSuggestions()
+            exerciseNames = vm.getExerciseSuggestions()
+            noteTypes = vm.getCustomNoteTypes()
+        }
+        val isGraph = pendingCardType == "GRAPH"
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = {
+                showScopeChooser = false
+                pendingCardType = null
+            },
+            title = { Text("What to track?") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 400.dp)) {
+                    LazyColumn {
+                        if (!isGraph) {
+                            item {
+                                TextButton(onClick = {
+                                    vm.addDashboardCard(pendingCardType!!, "ALL_WORKOUTS", null)
+                                    showScopeChooser = false
+                                    pendingCardType = null
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("All Workouts", modifier = Modifier.fillMaxWidth())
+                                }
+                            }
+                            item {
+                                Text("Sessions", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                            }
+                            items(sessionNames) { name ->
+                                TextButton(onClick = {
+                                    vm.addDashboardCard(pendingCardType!!, "SESSION_NAME", name)
+                                    showScopeChooser = false
+                                    pendingCardType = null
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(name, modifier = Modifier.fillMaxWidth())
+                                }
+                            }
+                        }
+                        item {
+                            Text("Exercises", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                        }
+                        items(exerciseNames) { name ->
+                            TextButton(onClick = {
+                                vm.addDashboardCard(pendingCardType!!, "EXERCISE_NAME", name)
+                                showScopeChooser = false
+                                pendingCardType = null
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Text(name, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                        item {
+                            Text("Other", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                        }
+                        item {
+                            TextButton(onClick = {
+                                vm.addDashboardCard(pendingCardType!!, "BODYWEIGHT", null)
+                                showScopeChooser = false
+                                pendingCardType = null
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Body Weight", modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                        if (!isGraph) {
+                            items(noteTypes) { type ->
+                                TextButton(onClick = {
+                                    vm.addDashboardCard(pendingCardType!!, "NOTE_TYPE", type)
+                                    showScopeChooser = false
+                                    pendingCardType = null
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(type, modifier = Modifier.fillMaxWidth())
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showScopeChooser = false
+                    pendingCardType = null
+                }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun DashboardCardView(card: DashboardCard, vm: WorkoutViewModel) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    val scopeLabel = card.scopeValue ?: when (card.scopeType) {
+        "ALL_WORKOUTS" -> "All Workouts"
+        "BODYWEIGHT" -> "Body Weight"
+        else -> card.scopeType
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { showDeleteConfirm = true }
+            )
+    ) {
+        when (card.cardType) {
+            "CALENDAR" -> CalendarCard(title = scopeLabel, scopeType = card.scopeType, scopeValue = card.scopeValue, vm = vm)
+            "GRAPH" -> {
+                GraphCard(
+                    title = scopeLabel,
+                    scopeType = card.scopeType,
+                    scopeValue = card.scopeValue,
+                    metric = card.metric,
+                    onMetricChange = { newMetric -> vm.updateDashboardCardMetric(card, newMetric) },
+                    vm = vm
+                )
+            }
+        }
+    }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Remove card?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteDashboardCard(card)
+                    showDeleteConfirm = false
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -202,155 +454,197 @@ fun MilestoneImage(fileName: String, modifier: Modifier = Modifier) {
 }
 
 
-@Composable
-fun StatsScreen(vm: WorkoutViewModel) {
-    var totalWeight by remember { mutableStateOf(0f) }
-    val scope = rememberCoroutineScope()
+val sessionColorPalette = listOf(
+    Color(0xFF6200EE), Color(0xFF03DAC5), Color(0xFFFF5722), Color(0xFF4CAF50),
+    Color(0xFF2196F3), Color(0xFFFF9800), Color(0xFFE91E63), Color(0xFF9C27B0)
+)
 
-    LaunchedEffect(Unit) {
-        totalWeight = vm.getTotalWeightLifted()
+@Composable
+fun CalendarCard(title: String, scopeType: String, scopeValue: String?, vm: WorkoutViewModel, modifier: Modifier = Modifier) {
+    var monthOffset by remember(scopeType, scopeValue) { mutableStateOf(0) }
+    var highlights by remember { mutableStateOf<Map<LocalDate, Color>>(emptyMap()) }
+
+    LaunchedEffect(scopeType, scopeValue) {
+        highlights = vm.getCalendarHighlights(scopeType, scopeValue)
     }
 
-    val currentMilestoneIndex = milestones.indexOfLast { totalWeight >= it.weightKg }
-    val currentMilestone = if (currentMilestoneIndex >= 0) milestones[currentMilestoneIndex] else null
-    val nextMilestone = milestones.getOrNull(currentMilestoneIndex + 1)
+    val displayedMonth = remember(monthOffset) { YearMonth.now().plusMonths(monthOffset.toLong()) }
+    val firstDay = displayedMonth.atDay(1)
+    val daysInMonth = displayedMonth.lengthOfMonth()
+    val startOffset = firstDay.dayOfWeek.value % 7
 
-    val progress = if (currentMilestone != null && nextMilestone != null) {
-        (totalWeight - currentMilestone.weightKg) / (nextMilestone.weightKg - currentMilestone.weightKg)
-    } else if (currentMilestone == null && nextMilestone != null) {
-        totalWeight / nextMilestone.weightKg
-    } else 1f
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))
     ) {
-        Text(
-            "STATS",
-            fontSize = 56.sp,
-            lineHeight = 56.sp,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            "TOTAL LIFTED: ${totalWeight.toInt()}KG",
-            fontSize = 20.sp,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Current milestone card
-            Card(
-                modifier = Modifier.weight(1f),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSystemInDarkTheme()) Color(0xFF1A1A1A) else Color.White
-                )
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title.uppercase(), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        "YOU HAVE LIFTED THE WEIGHT OF",
-                        fontSize = 14.sp,
-                        lineHeight = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (currentMilestone != null) {
-                        MilestoneImage(
-                            fileName = currentMilestone.fileName,
-                            modifier = Modifier.size(100.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            currentMilestone.name.uppercase(),
-                            fontSize = 16.sp,
-                            lineHeight = 18.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "${currentMilestone.weightKg.toInt()}KG",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    } else {
-                        Text(
-                            "KEEP LIFTING!",
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
+                IconButton(onClick = { monthOffset-- }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous month")
+                }
+                Text(
+                    "${displayedMonth.month.getDisplayName(TextStyle.FULL, Locale.getDefault())} ${displayedMonth.year}",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                IconButton(onClick = { monthOffset++ }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Next month")
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                listOf("S", "M", "T", "W", "T", "F", "S").forEach {
+                    Text(it, fontSize = 12.sp, color = Color(0xFF888888), modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                }
+            }
+            val totalCells = startOffset + daysInMonth
+            val rows = (totalCells + 6) / 7
+            for (row in 0 until rows) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    for (col in 0 until 7) {
+                        val cellIndex = row * 7 + col
+                        val dayNum = cellIndex - startOffset + 1
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (dayNum in 1..daysInMonth) {
+                                val date = displayedMonth.atDay(dayNum)
+                                val color = highlights[date]
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(color ?: Color.Transparent),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        dayNum.toString(),
+                                        fontSize = 12.sp,
+                                        color = if (color != null) Color.Black else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+val graphColorPalette = listOf(
+    Color(0xFF03DAC5), Color(0xFFFF5722), Color(0xFF4CAF50), Color(0xFF2196F3),
+    Color(0xFFFF9800), Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFFFFEB3B)
+)
+
+@Composable
+fun GraphCard(
+    title: String,
+    scopeType: String,
+    scopeValue: String?,
+    metric: String,
+    onMetricChange: (String) -> Unit,
+    vm: WorkoutViewModel,
+    modifier: Modifier = Modifier
+) {
+    var curves by remember { mutableStateOf<List<GraphCurve>>(emptyList()) }
+
+    LaunchedEffect(scopeType, scopeValue, metric) {
+        curves = vm.getGraphData(scopeType, scopeValue, metric)
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title.uppercase(), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (scopeType != "BODYWEIGHT") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("WEIGHT", "REPS", "VOLUME").forEach { option ->
+                        FilterChip(
+                            selected = metric == option,
+                            onClick = { onMetricChange(option) },
+                            label = { Text(option) }
                         )
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Next milestone card with circular progress
-            Card(
-                modifier = Modifier.weight(1f),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSystemInDarkTheme()) Color(0xFF1A1A1A) else Color.White
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        "NEXT MILESTONE",
-                        fontSize = 14.sp,
-                        lineHeight = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (nextMilestone != null) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.size(100.dp)
-                        ) {
-                            Canvas(modifier = Modifier.size(100.dp)) {
-                                val strokeWidth = 8.dp.toPx()
-                                drawArc(
-                                    color = Color.Gray.copy(alpha = 0.3f),
-                                    startAngle = -90f,
-                                    sweepAngle = 360f,
-                                    useCenter = false,
-                                    style = Stroke(width = strokeWidth)
-                                )
-                                drawArc(
-                                    color = Color(0xFF03DAC5),
-                                    startAngle = -90f,
-                                    sweepAngle = 360f * progress.coerceIn(0f, 1f),
-                                    useCenter = false,
-                                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                                )
+            if (curves.isEmpty() || curves.all { it.points.isEmpty() }) {
+                Text("No data yet", color = Color(0xFF888888), fontSize = 14.sp)
+            } else {
+                val allPoints = curves.flatMap { it.points }
+                val minY = allPoints.minOf { it.second }
+                val maxY = allPoints.maxOf { it.second }
+                val yRange = if (maxY == minY) 1f else maxY - minY
+                val maxX = curves.flatMap { it.points }.maxOf { it.first }.coerceAtLeast(1f)
+
+                Row {
+                    Column(
+                        modifier = Modifier
+                            .height(160.dp)
+                            .padding(end = 4.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(formatWeight(maxY), fontSize = 10.sp, color = Color(0xFF888888))
+                        Text(formatWeight(minY), fontSize = 10.sp, color = Color(0xFF888888))
+                    }
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp)
+                    ) {
+                        curves.forEachIndexed { i, curve ->
+                            val color = graphColorPalette[i % graphColorPalette.size]
+                            val sorted = curve.points.sortedBy { it.first }
+                            val path = Path()
+                            sorted.forEachIndexed { idx, (x, y) ->
+                                val px = if (maxX == 0f) size.width / 2 else (x / maxX) * size.width
+                                val py = size.height - ((y - minY) / yRange) * size.height
+                                if (idx == 0) path.moveTo(px, py) else path.lineTo(px, py)
                             }
-                            MilestoneImage(
-                                fileName = nextMilestone.fileName,
-                                modifier = Modifier.size(70.dp)
-                            )
+                            drawPath(path, color = color, style = Stroke(width = 3.dp.toPx()))
+                            sorted.forEach { (x, y) ->
+                                val px = if (maxX == 0f) size.width / 2 else (x / maxX) * size.width
+                                val py = size.height - ((y - minY) / yRange) * size.height
+                                drawCircle(color = color, radius = 4.dp.toPx(), center = Offset(px, py))
+                            }
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            nextMilestone.name.uppercase(),
-                            fontSize = 16.sp,
-                            lineHeight = 18.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "${nextMilestone.weightKg.toInt()}KG",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    } else {
-                        Text(
-                            "MAX REACHED!",
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    curves.forEachIndexed { i, curve ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(graphColorPalette[i % graphColorPalette.size], RoundedCornerShape(2.dp))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Set ${curve.setIndex}", fontSize = 12.sp, color = Color(0xFFAAAAAA))
+                        }
                     }
                 }
             }
@@ -361,16 +655,21 @@ fun StatsScreen(vm: WorkoutViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit) {
+fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit, onBodyWeightClick: () -> Unit) {
     val feed by vm.feed.collectAsState()
     var showChooserDialog by remember { mutableStateOf(false) }
     var showSessionDialog by remember { mutableStateOf(false) }
     var showBodyWeightDialog by remember { mutableStateOf(false) }
+    var showCustomNameDialog by remember { mutableStateOf(false) }
+    var showNoteDialog by remember { mutableStateOf(false) }
+    var pendingNoteType by remember { mutableStateOf<String?>(null) }
     var sessionName by remember { mutableStateOf("") }
     var bodyWeightValue by remember { mutableStateOf("") }
     var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedKey by remember { mutableStateOf<String?>(null) }
+    var selectedFilter by remember { mutableStateOf("ALL") }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
     LaunchedEffect(feed) {
         suggestions = vm.getSessionSuggestions()
@@ -381,53 +680,117 @@ fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit) {
             TopAppBar(title = {
                 Text("SESSIONS", style = MaterialTheme.typography.titleLarge, fontSize = 80.sp)
             })
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showChooserDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add")
-            }
         }
     ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures(onTap = { selectedKey = null })
-                }
-        ) {
-            LazyColumn(
-                contentPadding = padding,
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+        Column(modifier = Modifier.padding(top = padding.calculateTopPadding())) {
+            val customTypes = feed.filterIsInstance<FeedItem.NoteItem>()
+                .map { it.entry.typeName }
+                .filter { it != "CARDIO" && it != "NUTRITION" }
+                .distinct()
+            val filterOptions = listOf("ALL", "WORKOUT", "BODYWEIGHT", "CARDIO", "NUTRITION") + customTypes
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(feed, key = {
-                    when (it) {
-                        is FeedItem.SessionItem -> "session:${it.session.id}"
-                        is FeedItem.BodyWeightItem -> "bw:${it.entry.id}"
+                filterOptions.forEach { option ->
+                    FilterChip(
+                        selected = selectedFilter == option,
+                        onClick = { selectedFilter = option },
+                        label = { Text(option) }
+                    )
+                }
+            }
+
+            val filteredFeed = feed.filter { item ->
+                when (selectedFilter) {
+                    "ALL" -> true
+                    "WORKOUT" -> item is FeedItem.SessionItem
+                    "BODYWEIGHT" -> item is FeedItem.BodyWeightItem
+                    else -> item is FeedItem.NoteItem && item.entry.typeName == selectedFilter
+                }
+            }
+
+            LaunchedEffect(filteredFeed.size) {
+                if (filteredFeed.isNotEmpty()) {
+                    listState.scrollToItem(filteredFeed.size)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { selectedKey = null })
                     }
-                }) { item ->
-                    when (item) {
-                        is FeedItem.SessionItem -> {
-                            val key = "session:${item.session.id}"
-                            SessionCard(
-                                session = item.session,
-                                vm = vm,
-                                isSelected = selectedKey == key,
-                                onSelect = { selectedKey = key },
-                                onDeselect = { selectedKey = null },
-                                onClick = { onSessionClick(item.session.id) }
-                            )
+            ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(filteredFeed, key = {
+                        when (it) {
+                            is FeedItem.SessionItem -> "session:${it.session.id}"
+                            is FeedItem.BodyWeightItem -> "bw:${it.entry.id}"
+                            is FeedItem.NoteItem -> "note:${it.entry.id}"
                         }
-                        is FeedItem.BodyWeightItem -> {
-                            val key = "bw:${item.entry.id}"
-                            BodyWeightCard(
-                                entry = item.entry,
-                                vm = vm,
-                                isSelected = selectedKey == key,
-                                onSelect = { selectedKey = key },
-                                onDeselect = { selectedKey = null }
-                            )
+                    }) { item ->
+                        when (item) {
+                            is FeedItem.SessionItem -> {
+                                val key = "session:${item.session.id}"
+                                SessionCard(
+                                    session = item.session, vm = vm,
+                                    isSelected = selectedKey == key,
+                                    onSelect = { selectedKey = key },
+                                    onDeselect = { selectedKey = null },
+                                    onClick = { onSessionClick(item.session.id) }
+                                )
+                            }
+                            is FeedItem.BodyWeightItem -> {
+                                val key = "bw:${item.entry.id}"
+                                BodyWeightCard(
+                                    entry = item.entry, vm = vm,
+                                    isSelected = selectedKey == key,
+                                    onSelect = { selectedKey = key },
+                                    onDeselect = { selectedKey = null },
+                                    onClick = onBodyWeightClick
+                                )
+                            }
+                            is FeedItem.NoteItem -> {
+                                val key = "note:${item.entry.id}"
+                                NoteEntryCard(
+                                    entry = item.entry, vm = vm,
+                                    isSelected = selectedKey == key,
+                                    onSelect = { selectedKey = key },
+                                    onDeselect = { selectedKey = null }
+                                )
+                            }
                         }
+                    }
+                    item {
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clickable { showChooserDialog = true },
+                            colors = CardDefaults.cardColors(containerColor = Color.White)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("ADD SESSION", color = Color.Black, fontSize = 16.sp)
+                            }
+                        }
+                    }
+
+                    item {
+                        Spacer(modifier = Modifier.height(80.dp))
                     }
                 }
             }
@@ -436,26 +799,39 @@ fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit) {
 
     if (showChooserDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showChooserDialog = false },
             title = { Text("Add") },
-            text = { Text("What do you want to log?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showChooserDialog = false
-                    showSessionDialog = true
-                }) { Text("WORKOUT") }
+            text = {
+                Column {
+                    listOf("WORKOUT", "BODY WEIGHT", "CARDIO", "NUTRITION", "CUSTOM").forEach { option ->
+                        TextButton(
+                            onClick = {
+                                showChooserDialog = false
+                                when (option) {
+                                    "WORKOUT" -> showSessionDialog = true
+                                    "BODY WEIGHT" -> showBodyWeightDialog = true
+                                    "CARDIO" -> { pendingNoteType = "CARDIO"; showNoteDialog = true }
+                                    "NUTRITION" -> { pendingNoteType = "NUTRITION"; showNoteDialog = true }
+                                    "CUSTOM" -> showCustomNameDialog = true
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(option, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    showChooserDialog = false
-                    showBodyWeightDialog = true
-                }) { Text("BODY WEIGHT") }
+            confirmButton = {
+                TextButton(onClick = { showChooserDialog = false }) { Text("Cancel") }
             }
         )
     }
 
     if (showSessionDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showSessionDialog = false },
             title = { Text("New Session") },
             text = {
@@ -506,6 +882,7 @@ fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit) {
 
     if (showBodyWeightDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = {
                 showBodyWeightDialog = false
                 bodyWeightValue = ""
@@ -537,6 +914,67 @@ fun SessionsScreen(vm: WorkoutViewModel, onSessionClick: (Int) -> Unit) {
             }
         )
     }
+
+    if (showCustomNameDialog) {
+        var customTypeName by remember { mutableStateOf("") }
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = { showCustomNameDialog = false },
+            title = { Text("New Card Type") },
+            text = {
+                OutlinedTextField(
+                    value = customTypeName,
+                    onValueChange = { customTypeName = it },
+                    label = { Text("Type name") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (customTypeName.isNotBlank()) {
+                        pendingNoteType = customTypeName.uppercase()
+                        showCustomNameDialog = false
+                        showNoteDialog = true
+                    }
+                }) { Text("Next") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomNameDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showNoteDialog && pendingNoteType != null) {
+        var noteText by remember { mutableStateOf("") }
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = {
+                showNoteDialog = false
+                pendingNoteType = null
+            },
+            title = { Text("New ${pendingNoteType}") },
+            text = {
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Note") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.addNoteEntry(pendingNoteType!!, noteText)
+                    showNoteDialog = false
+                    pendingNoteType = null
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showNoteDialog = false
+                    pendingNoteType = null
+                }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 
@@ -554,7 +992,6 @@ fun SessionCard(
     val allSets = remember { mutableStateMapOf<Int, List<WorkoutSet>>() }
     var showEditDialog by remember { mutableStateOf(false) }
     var editName by remember(showEditDialog) { mutableStateOf(session.name) }
-    var editDate by remember(showEditDialog) { mutableStateOf(session.date) }
 
     val colorPalette = listOf(
         Color(0xFF6200EE),
@@ -688,7 +1125,14 @@ fun SessionCard(
     }
 
     if (showEditDialog) {
+        val context = LocalContext.current
+        var pickedDate by remember(showEditDialog) {
+            mutableStateOf(
+                Instant.ofEpochMilli(session.timestamp).atZone(ZoneId.systemDefault()).toLocalDate()
+            )
+        }
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showEditDialog = false },
             title = { Text("Edit Session") },
             text = {
@@ -698,17 +1142,23 @@ fun SessionCard(
                         onValueChange = { editName = it },
                         label = { Text("Session name") }
                     )
-                    OutlinedTextField(
-                        value = editDate,
-                        onValueChange = { editDate = it },
-                        label = { Text("Date") }
-                    )
+                    OutlinedButton(onClick = {
+                        DatePickerDialog(
+                            context,
+                            { _, year, month, dayOfMonth ->
+                                pickedDate = LocalDate.of(year, month + 1, dayOfMonth)
+                            },
+                            pickedDate.year, pickedDate.monthValue - 1, pickedDate.dayOfMonth
+                        ).show()
+                    }) {
+                        Text(pickedDate.format(DateTimeFormatter.ofPattern("d MMMM yyyy")))
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (editName.isNotBlank() && editDate.isNotBlank()) {
-                        vm.updateSession(session, editName, editDate)
+                    if (editName.isNotBlank()) {
+                        vm.updateSession(session, editName, pickedDate)
                         showEditDialog = false
                     }
                 }) { Text("Save") }
@@ -736,6 +1186,10 @@ fun WorkoutsScreen(vm: WorkoutViewModel, sessionId: Int, onBack: () -> Unit, onW
     var filteredSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedWorkoutId by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
+    var sessionName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(sessionId) {
+        sessionName = vm.getSessionName(sessionId)
+    }
 
     LaunchedEffect(workouts) {
         suggestions = vm.getExerciseSuggestions()
@@ -808,12 +1262,20 @@ fun WorkoutsScreen(vm: WorkoutViewModel, sessionId: Int, onBack: () -> Unit, onW
                         )
                     }
                 }
+
+                sessionName?.let { name ->
+                    item {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        CalendarCard(title = "$name Calendar", scopeType = "SESSION_NAME", scopeValue = name, vm = vm)
+                    }
+                }
             }
         }
     }
 
     if (showDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = {
                 showDialog = false
                 exerciseName = ""
@@ -947,6 +1409,7 @@ fun WorkoutCard(
 
     if (showEditDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showEditDialog = false },
             title = { Text("Edit Exercise") },
             text = {
@@ -979,6 +1442,7 @@ fun SetsScreen(vm: WorkoutViewModel, workoutId: Int, exerciseName: String, onBac
     var reps by remember(showDialog) { mutableStateOf("") }
     var weight by remember(showDialog) { mutableStateOf("") }
     var selectedSetId by remember { mutableStateOf<Int?>(null) }
+    var graphMetric by remember { mutableStateOf("WEIGHT") }
 
     Scaffold(
         topBar = {
@@ -1031,6 +1495,21 @@ fun SetsScreen(vm: WorkoutViewModel, workoutId: Int, exerciseName: String, onBac
                 item {
                     WorkoutNoteCard(vm = vm, exerciseName = exerciseName)
                 }
+
+                item {
+                    CalendarCard(title = "$exerciseName Calendar", scopeType = "EXERCISE_NAME", scopeValue = exerciseName, vm = vm)
+                }
+
+                item {
+                    GraphCard(
+                        title = "$exerciseName Progress",
+                        scopeType = "EXERCISE_NAME",
+                        scopeValue = exerciseName,
+                        metric = graphMetric,
+                        onMetricChange = { graphMetric = it },
+                        vm = vm
+                    )
+                }
             }
         }
     }
@@ -1043,6 +1522,7 @@ fun SetsScreen(vm: WorkoutViewModel, workoutId: Int, exerciseName: String, onBac
         val repsFocusRequester = remember { FocusRequester() }
 
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = {
                 showDialog = false
                 reps = ""
@@ -1075,7 +1555,24 @@ fun SetsScreen(vm: WorkoutViewModel, workoutId: Int, exerciseName: String, onBac
                         supportingText = {
                             if (repsError) Text("Enter a rep count")
                         },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                val w = weight.toFloatOrNull()
+                                val r = reps.toIntOrNull()
+                                if (r == null) {
+                                    repsError = true
+                                } else if (w != null) {
+                                    vm.addSet(workoutId, r, w, isPartial, difficulty)
+                                    reps = ""
+                                    weight = ""
+                                    showDialog = false
+                                }
+                            }
+                        ),
                         modifier = Modifier.focusRequester(repsFocusRequester)
                     )
                     Row(
@@ -1154,7 +1651,7 @@ fun SetRow(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 2.dp)
                 .combinedClickable(
-                    onClick = { if (isSelected) onDeselect() },
+                    onClick = { showEditDialog = true },
                     onLongClick = onSelect
                 ),
             colors = CardDefaults.cardColors(
@@ -1197,6 +1694,7 @@ fun SetRow(
 
     if (showEditDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showEditDialog = false },
             title = { Text("Edit Set") },
             text = {
@@ -1323,7 +1821,8 @@ fun BodyWeightCard(
     vm: WorkoutViewModel,
     isSelected: Boolean,
     onSelect: () -> Unit,
-    onDeselect: () -> Unit
+    onDeselect: () -> Unit,
+    onClick: () -> Unit
 ) {
     var showEditDialog by remember { mutableStateOf(false) }
     var editWeight by remember(showEditDialog) { mutableStateOf(entry.weight.toString()) }
@@ -1337,7 +1836,7 @@ fun BodyWeightCard(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp)
                 .combinedClickable(
-                    onClick = { if (isSelected) onDeselect() },
+                    onClick = { if (isSelected) onDeselect() else onClick() },
                     onLongClick = onSelect
                 ),
             colors = CardDefaults.cardColors(
@@ -1357,18 +1856,11 @@ fun BodyWeightCard(
                 ) {
                     Text(
                         text = "BODY WEIGHT",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontSize = 60.sp,
-                        lineHeight = 60.sp,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontSize = 20.sp,
+                        lineHeight = 20.sp,
                         color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .weight(1f)
-                            .basicMarquee(
-                                iterations = Int.MAX_VALUE,
-                                delayMillis = 1000,
-                                velocity = 50.dp
-                            )
+                        maxLines = 1
                     )
                     Column(horizontalAlignment = Alignment.Start) {
                         val dateParts = entry.date.split(" ")
@@ -1386,8 +1878,8 @@ fun BodyWeightCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "${entry.weight}KG",
-                    fontSize = 20.sp,
-                    lineHeight = 20.sp,
+                    fontSize = 60.sp,
+                    lineHeight = 60.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -1414,6 +1906,7 @@ fun BodyWeightCard(
 
     if (showEditDialog) {
         AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
             onDismissRequest = { showEditDialog = false },
             title = { Text("Edit Body Weight") },
             text = {
@@ -1441,6 +1934,235 @@ fun BodyWeightCard(
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BodyWeightDetailScreen(vm: WorkoutViewModel, onBack: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Body Weight") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                GraphCard(
+                    title = "Body Weight Progress",
+                    scopeType = "BODYWEIGHT",
+                    scopeValue = null,
+                    metric = "WEIGHT",
+                    onMetricChange = {},
+                    vm = vm
+                )
+            }
+            item { CalendarCard(title = "Body Weight Calendar", scopeType = "BODYWEIGHT", scopeValue = null, vm = vm) }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun NoteEntryCard(
+    entry: NoteEntry,
+    vm: WorkoutViewModel,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
+    onDeselect: () -> Unit
+) {
+    var showEditDialog by remember { mutableStateOf(false) }
+    var editNote by remember(showEditDialog) { mutableStateOf(entry.note) }
+    val cardShape = RoundedCornerShape(16.dp)
+
+    Column {
+        Card(
+            shape = cardShape,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .combinedClickable(
+                    onClick = { if (isSelected) onDeselect() },
+                    onLongClick = onSelect
+                ),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isSelected) Color(0xFF333333) else Color(0xFF1A1A1A)
+            ),
+            border = if (isSelected) BorderStroke(2.dp, Color.White) else null
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = entry.typeName.uppercase(),
+                        fontSize = 28.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                    Column(horizontalAlignment = Alignment.Start) {
+                        entry.date.split(" ").forEach { part ->
+                            Text(
+                                text = part,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = entry.note,
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (isSelected) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = { showEditDialog = true; onDeselect() }) { Text("EDIT") }
+                TextButton(onClick = { vm.deleteNoteEntry(entry); onDeselect() }) { Text("DELETE") }
+            }
+        }
+    }
+
+    if (showEditDialog) {
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = { showEditDialog = false },
+            title = { Text("Edit ${entry.typeName}") },
+            text = {
+                OutlinedTextField(
+                    value = editNote,
+                    onValueChange = { editNote = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Note") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.updateNoteEntry(entry, editNote)
+                    showEditDialog = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileScreen(vm: WorkoutViewModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showRestoreConfirm by remember { mutableStateOf(false) }
+    var pendingImportContent by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val content = vm.exportBackup()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+                statusMessage = "Backup saved"
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
+                if (content != null) {
+                    pendingImportContent = content
+                    showRestoreConfirm = true
+                }
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(title = {
+                Text("PROFILE", style = MaterialTheme.typography.titleLarge, fontSize = 80.sp)
+            })
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = padding.calculateTopPadding())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("BACKUP", fontSize = 16.sp, color = Color(0xFFAAAAAA))
+            OutlinedButton(
+                onClick = { exportLauncher.launch("solids_backup.md") },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Export Backup") }
+
+            OutlinedButton(
+                onClick = { importLauncher.launch("text/markdown") },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Import Backup") }
+
+            statusMessage?.let {
+                Text(it, color = Color(0xFF4CAF50), fontSize = 14.sp)
+            }
+        }
+    }
+
+    if (showRestoreConfirm && pendingImportContent != null) {
+        AlertDialog(
+            containerColor = Color(0xFF1A1A1A),
+            onDismissRequest = {
+                showRestoreConfirm = false
+                pendingImportContent = null
+            },
+            title = { Text("Import Backup") },
+            text = { Text("Replace all current data, or merge with what's already here?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val ok = vm.restoreBackup(pendingImportContent!!)
+                        statusMessage = if (ok) "Restored — all data replaced" else "Import failed: unrecognized file"
+                        showRestoreConfirm = false
+                        pendingImportContent = null
+                    }
+                }) { Text("Replace All") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val ok = vm.mergeBackup(pendingImportContent!!)
+                        statusMessage = if (ok) "Merged into existing data" else "Import failed: unrecognized file"
+                        showRestoreConfirm = false
+                        pendingImportContent = null
+                    }
+                }) { Text("Merge") }
+            }
+        )
+    }
+}
 
 data class Milestone(
     val name: String,
